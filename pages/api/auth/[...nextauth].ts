@@ -1,65 +1,58 @@
+import NextAuth, { type NextAuthOptions } from "next-auth";
+import GitHubProvider from "next-auth/providers/github";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import NextAuth, { AuthOptions } from "next-auth";
-import prisma from "@/app/libs/prismadb"
-import GithubProvider from "next-auth/providers/github"
-import GoogleProvider from "next-auth/providers/google"
-import CredentialsProvider from "next-auth/providers/credentials"
-import bcrypt from "bcrypt"
+import prisma from "@/lib/prisma";
 
+const VERCEL_DEPLOYMENT = !!process.env.VERCEL_URL;
 
-export const authOptions: AuthOptions = {
-    adapter: PrismaAdapter(prisma),
-    providers: [
-        GithubProvider({
-            clientId: process.env.GITHUB_ID as string,
-            clientSecret: process.env.GITHUB_SECRET as string
-        }),
-        GithubProvider({
-            clientId: process.env.GOOGLE_CLIENT_ID as string,
-            clientSecret: process.env.GOOGLE_CLIENT_SECRET as string
-        }),
-        CredentialsProvider({
-            name: 'credentials',
-            credentials: {
-                email: { label: 'email', type: 'text'},
-                password: {label:'password', type: 'text'}
-            },
-            async authorize(credentials) {
-                if(!credentials?.email || !credentials?.password) {
-                    throw new Error('Invalid credentials')
-                }
+if (!process.env.GITHUB_ID || !process.env.GITHUB_SECRET)
+  throw new Error("Failed to initialize Github authentication");
 
-                const user = await prisma.user.findUnique({
-                    where: {
-                        email: credentials.email
-                    }
-                })
-
-                if(!user || !user?.hashedPassword) {
-                    throw new Error('Invalid credentials')
-                }
-
-                const isCorrectPassword = await bcrypt.compare(
-                    credentials.password,
-                    user.hashedPassword
-                )
-
-                if(!isCorrectPassword) {
-                    throw new Error("Invalid credentials")
-                }
-
-                return user
-            }
-        })
-    ],
-    pages: {
-        signIn: '/'
+export const authOptions: NextAuthOptions = {
+  providers: [
+    GitHubProvider({
+      clientId: process.env.GITHUB_ID,
+      clientSecret: process.env.GITHUB_SECRET,
+      profile(profile) {
+        return {
+          id: profile.id.toString(),
+          name: profile.name || profile.login,
+          gh_username: profile.login,
+          email: profile.email,
+          image: profile.avatar_url,
+        };
+      },
+    }),
+  ],
+  pages: {
+    signIn: `/login`,
+    verifyRequest: `/login`,
+    error: "/login", // Error code passed in query string as ?error=
+  },
+  adapter: PrismaAdapter(prisma),
+  cookies: {
+    sessionToken: {
+      name: `${VERCEL_DEPLOYMENT ? "__Secure-" : ""}next-auth.session-token`,
+      options: {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        // When working on localhost, the cookie domain must be omitted entirely (https://stackoverflow.com/a/1188145)
+        domain: VERCEL_DEPLOYMENT ? ".vercel.pub" : undefined,
+        secure: VERCEL_DEPLOYMENT,
+      },
     },
-    debug: process.env.NODE_ENV === 'development',
-    session: {
-        strategy: 'jwt'
-    },
-    secret: process.env.NEXTAUTH_SECRET
-}
+  },
+  callbacks: {
+    session: ({ session, user }) => ({
+      ...session,
+      user: {
+        ...session.user,
+        id: user.id,
+        username: user.username,
+      },
+    }),
+  },
+};
 
-export default NextAuth(authOptions)
+export default NextAuth(authOptions);
